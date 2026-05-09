@@ -3,6 +3,7 @@ import type { CuttingPrice, EstimationItem } from "./types";
 
 export const MASTER_STORAGE_KEY = "cutting_price_master";
 export const ESTIMATION_STORAGE_KEY = "cutting_estimation_items";
+export const CUSTOMER_STORAGE_KEY = "cutting_customer_name";
 
 const validDensities = new Set([
   "Super Low",
@@ -85,4 +86,13 @@ export function loadEstimationItems(): EstimationItem[] {
 
 export function saveEstimationItems(rows: EstimationItem[]) {
   window.localStorage.setItem(ESTIMATION_STORAGE_KEY, JSON.stringify(rows));
+}
+
+export function loadCustomerName(): string {
+  if (typeof window === "undefined") return "";
+  return window.localStorage.getItem(CUSTOMER_STORAGE_KEY) || "";
+}
+
+export function saveCustomerName(name: string) {
+  window.localStorage.setItem(CUSTOMER_STORAGE_KEY, name);
 }

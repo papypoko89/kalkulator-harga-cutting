@@ -18,7 +18,9 @@ import { formatNumber, formatRupiah, sortText, toNumber } from "@/lib/format";
 import {
   loadEstimationItems,
   loadMaster,
+  loadCustomerName,
   normalizePriceRows,
+  saveCustomerName,
   saveEstimationItems,
   saveMaster,
 } from "@/lib/storage";
@@ -68,6 +70,7 @@ export default function Home() {
   );
   const [master, setMaster] = useState<CuttingPrice[]>([]);
   const [items, setItems] = useState<EstimationItem[]>([]);
+  const [customerName, setCustomerName] = useState("");
   const [calculator, setCalculator] =
     useState<CalculatorInput>(emptyCalculator);
   const [notice, setNotice] = useState("");
@@ -82,6 +85,7 @@ export default function Home() {
   useEffect(() => {
     setMaster(loadMaster());
     setItems(loadEstimationItems());
+    setCustomerName(loadCustomerName());
   }, []);
 
   useEffect(() => {
@@ -91,6 +95,10 @@ export default function Home() {
   useEffect(() => {
     saveEstimationItems(items);
   }, [items]);
+
+  useEffect(() => {
+    saveCustomerName(customerName);
+  }, [customerName]);
 
   function flash(message: string) {
     setNotice(message);
@@ -248,18 +256,20 @@ export default function Home() {
 
     const text = [
       "Estimasi Jasa Cutting",
+      customerName.trim() ? `Customer: ${customerName.trim()}` : "",
       "",
       ...items.flatMap((item, index) => [
-        `${index + 1}. ${item.material} ${formatThickness(item.thickness)} - Density ${item.density}`,
+        `${index + 1}. ${item.material} ${formatThickness(item.thickness)}`,
         `Ukuran: ${formatNumber(item.lengthCm)} x ${formatNumber(item.widthCm)} cm`,
         `Qty: ${formatNumber(item.qty)} pcs`,
-        `Rate: ${formatRupiah(item.pricePerCm2)} / cm²`,
         `Harga satuan: ${formatRupiah(item.unitPrice)}`,
         `Total: ${formatRupiah(item.total)}`,
         "",
       ]),
       `Grand Total: ${formatRupiah(grandTotal)}`,
-    ].join("\n");
+    ]
+      .filter((line, index, array) => line !== "" || array[index - 1] !== "")
+      .join("\n");
 
     try {
       await navigator.clipboard.writeText(text);
@@ -429,7 +439,7 @@ export default function Home() {
           <>
             <section className="grid gap-5 lg:grid-cols-[1.1fr_0.9fr]">
               <div className="card p-5">
-                <div className="mb-5 flex items-center justify-between gap-3">
+                  <div className="mb-5 flex items-center justify-between gap-3">
                   <div>
                     <h2 className="text-xl font-bold">Input Cutting</h2>
                     <p className="mt-1 text-sm text-[#667085]">
@@ -444,6 +454,18 @@ export default function Home() {
                     <RotateCcw size={18} />
                     Reset
                   </button>
+                </div>
+
+                <div className="mb-4 rounded-lg border border-[#e5e9f0] bg-[#f8fafc] p-4">
+                  <div className="field">
+                    <label>Nama Customer</label>
+                    <input
+                      className="input"
+                      placeholder="Contoh: Bu Rina / PT Maju Jaya"
+                      value={customerName}
+                      onChange={(event) => setCustomerName(event.target.value)}
+                    />
+                  </div>
                 </div>
 
                 <div className="grid gap-4 sm:grid-cols-2">
