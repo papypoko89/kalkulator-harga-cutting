@@ -16,19 +16,26 @@ import {
 import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
 import { formatNumber, formatRupiah, sortText, toNumber } from "@/lib/format";
 import {
-  loadEstimationItems,
+  DEFAULT_OFFER_MULTIPLIER,
+  createEstimationDraft,
+  loadEstimationDrafts,
   loadMaster,
-  loadCustomerName,
+  loadOfferMultiplier,
   normalizePriceRows,
-  saveCustomerName,
-  saveEstimationItems,
+  saveEstimationDrafts,
   saveMaster,
+  saveOfferMultiplier,
 } from "@/lib/storage";
 import {
   CalculatorInput,
   CuttingPrice,
+  CUSTOMER_PRICE_MODES,
+  CustomerPriceMode,
   DENSITY_OPTIONS,
   Density,
+  ESTIMATION_DRAFT_STATUSES,
+  EstimationDraft,
+  EstimationDraftStatus,
   EstimationItem,
 } from "@/lib/types";
 
@@ -96,10 +103,13 @@ export default function Home() {
     "calculator",
   );
   const [master, setMaster] = useState<CuttingPrice[]>([]);
-  const [items, setItems] = useState<EstimationItem[]>([]);
-  const [customerName, setCustomerName] = useState("");
+  const [drafts, setDrafts] = useState<EstimationDraft[]>([]);
+  const [activeDraftId, setActiveDraftId] = useState("");
   const [calculator, setCalculator] =
     useState<CalculatorInput>(emptyCalculator);
+  const [offerMultiplier, setOfferMultiplier] = useState(
+    DEFAULT_OFFER_MULTIPLIER,
+  );
   const [notice, setNotice] = useState("");
   const [masterForm, setMasterForm] = useState(emptyForm);
   const [editingPriceId, setEditingPriceId] = useState<string | null>(null);
@@ -111,8 +121,13 @@ export default function Home() {
 
   useEffect(() => {
     setMaster(loadMaster());
-    setItems(loadEstimationItems());
-    setCustomerName(loadCustomerName());
+    const storedDrafts = loadEstimationDrafts();
+    const initialDrafts = storedDrafts.length
+      ? storedDrafts
+      : [createEstimationDraft()];
+    setDrafts(initialDrafts);
+    setActiveDraftId(initialDrafts[0]?.id || "");
+    setOfferMultiplier(loadOfferMultiplier());
   }, []);
 
   useEffect(() => {
@@ -120,12 +135,12 @@ export default function Home() {
   }, [master]);
 
   useEffect(() => {
-    saveEstimationItems(items);
-  }, [items]);
+    if (drafts.length) saveEstimationDrafts(drafts);
+  }, [drafts]);
 
   useEffect(() => {
-    saveCustomerName(customerName);
-  }, [customerName]);
+    saveOfferMultiplier(offerMultiplier);
+  }, [offerMultiplier]);
 
   function flash(message: string) {
     setNotice(message);
@@ -187,12 +202,27 @@ export default function Home() {
     const width = toNumber(calculator.widthCm);
     const qty = toNumber(calculator.qty);
     const area = length > 0 && width > 0 ? length * width : 0;
-    const rate = selectedPrice?.pricePerCm2 || 0;
-    const unitPrice = area * rate;
-    const total = unitPrice * (qty > 0 ? qty : 0);
+    const bottomRate = selectedPrice?.pricePerCm2 || 0;
+    const offerRate = bottomRate * offerMultiplier;
+    const offerUnitPrice = area * offerRate;
+    const unitPrice = area * bottomRate;
+    const validQty = qty > 0 ? qty : 0;
+    const offerTotal = offerUnitPrice * validQty;
+    const total = unitPrice * validQty;
 
-    return { length, width, qty, area, rate, unitPrice, total };
-  }, [calculator, selectedPrice]);
+    return {
+      length,
+      width,
+      qty,
+      area,
+      offerRate,
+      bottomRate,
+      offerUnitPrice,
+      unitPrice,
+      offerTotal,
+      total,
+    };
+  }, [calculator, offerMultiplier, selectedPrice]);
 
   const validationMessage = useMemo(() => {
     if (!calculator.material) return "Pilih bahan terlebih dahulu.";
@@ -218,10 +248,84 @@ export default function Home() {
       .sort((a, b) => sortText(a.material, b.material) || sortText(a.thickness, b.thickness));
   }, [densityFilter, master, searchQuery, statusFilter]);
 
+  const activeDraft = useMemo(
+    () => drafts.find((draft) => draft.id === activeDraftId) || drafts[0],
+    [activeDraftId, drafts],
+  );
+
+  const items = activeDraft?.items || [];
+  const customerName = activeDraft?.customerName || "";
+
   const grandTotal = useMemo(
     () => items.reduce((sum, item) => sum + item.total, 0),
     [items],
   );
+
+  function getOfferUnitPrice(item: EstimationItem) {
+    return item.areaCm2 * item.pricePerCm2 * offerMultiplier;
+  }
+
+  function getOfferTotal(item: EstimationItem) {
+    return getOfferUnitPrice(item) * item.qty;
+  }
+
+  function getCustomerUnitPrice(item: EstimationItem) {
+    return activeDraft?.customerPriceMode === "Bottom Price"
+      ? item.unitPrice
+      : getOfferUnitPrice(item);
+  }
+
+  function getCustomerTotal(item: EstimationItem) {
+    return activeDraft?.customerPriceMode === "Bottom Price"
+      ? item.total
+      : getOfferTotal(item);
+  }
+
+  const grandOfferTotal = useMemo(
+    () => items.reduce((sum, item) => sum + getOfferTotal(item), 0),
+    [items, offerMultiplier],
+  );
+
+  const grandCustomerTotal = useMemo(
+    () => items.reduce((sum, item) => sum + getCustomerTotal(item), 0),
+    [activeDraft?.customerPriceMode, items, offerMultiplier],
+  );
+
+  function updateActiveDraft(
+    updater: (draft: EstimationDraft) => EstimationDraft,
+  ) {
+    if (!activeDraft) return;
+
+    setDrafts((current) =>
+      current.map((draft) =>
+        draft.id === activeDraft?.id
+          ? { ...updater(draft), updatedAt: new Date().toISOString() }
+          : draft,
+      ),
+    );
+  }
+
+  function createDraft() {
+    const nextDraft = createEstimationDraft(
+      `Customer ${drafts.length + 1}`,
+    );
+    setDrafts((current) => [nextDraft, ...current]);
+    setActiveDraftId(nextDraft.id);
+    setCalculator(emptyCalculator);
+    flash("Draft customer baru dibuat.");
+  }
+
+  function deleteDraft(id: string) {
+    setDrafts((current) => {
+      const nextDrafts = current.filter((draft) => draft.id !== id);
+      if (activeDraftId === id) {
+        setActiveDraftId(nextDrafts[0]?.id || "");
+        setCalculator(emptyCalculator);
+      }
+      return nextDrafts;
+    });
+    flash("Draft customer dihapus.");
+  }
 
   function updateCalculator(key: keyof CalculatorInput, value: string) {
     setCalculator((current) => {
@@ -236,6 +340,11 @@ export default function Home() {
   }
 
   function addOrUpdateItem() {
+    if (!activeDraft) {
+      flash("Buat draft customer terlebih dahulu.");
+      return;
+    }
+
     if (validationMessage || !selectedPrice) {
       flash(validationMessage || "Lengkapi input cutting terlebih dahulu.");
       return;
@@ -251,12 +360,15 @@ export default function Home() {
       widthCm: calculation.width,
       areaCm2: calculation.area,
       qty: calculation.qty,
+      offerPricePerCm2: calculation.offerRate,
       pricePerCm2: selectedPrice.pricePerCm2,
+      offerUnitPrice: calculation.offerUnitPrice,
+      offerTotal: calculation.offerTotal,
       unitPrice: calculation.unitPrice,
       total: calculation.total,
     };
 
-    setItems((current) => [...current, item]);
+    updateActiveDraft((draft) => ({ ...draft, items: [...draft.items, item] }));
     setCalculator((current) => ({ ...current, lengthCm: "", widthCm: "", qty: "1" }));
     flash("Berhasil tambah data estimasi.");
   }
@@ -270,12 +382,20 @@ export default function Home() {
       widthCm: String(item.widthCm),
       qty: String(item.qty),
     });
-    setItems((current) => current.filter((row) => row.id !== item.id));
+    updateActiveDraft((draft) => ({
+      ...draft,
+      items: draft.items.filter((row) => row.id !== item.id),
+    }));
     window.scrollTo({ top: 0, behavior: "smooth" });
     flash("Item dibuka lagi di form kalkulator.");
   }
 
   async function copyWhatsApp() {
+    if (!activeDraft) {
+      flash("Buat draft customer terlebih dahulu.");
+      return;
+    }
+
     if (!items.length) {
       flash("Belum ada item estimasi untuk dicopy.");
       return;
@@ -289,11 +409,11 @@ export default function Home() {
         `${index + 1}. ${item.material} ${formatThickness(item.thickness)}`,
         `Ukuran: ${formatNumber(item.lengthCm)} x ${formatNumber(item.widthCm)} cm`,
         `Qty: ${formatNumber(item.qty)} pcs`,
-        `Harga satuan: ${formatRupiah(item.unitPrice)}`,
-        `Total: ${formatRupiah(item.total)}`,
+        `Harga satuan: ${formatRupiah(getCustomerUnitPrice(item))}`,
+        `Total: ${formatRupiah(getCustomerTotal(item))}`,
         "",
       ]),
-      `Grand Total: ${formatRupiah(grandTotal)}`,
+      `Grand Total: ${formatRupiah(grandCustomerTotal)}`,
     ]
       .filter((line, index, array) => line !== "" || array[index - 1] !== "")
       .join("\n");
@@ -311,7 +431,7 @@ export default function Home() {
   }
 
   function resetItems() {
-    setItems([]);
+    updateActiveDraft((draft) => ({ ...draft, items: [] }));
     flash("Daftar estimasi sudah direset.");
   }
 
@@ -320,8 +440,13 @@ export default function Home() {
     const thickness = masterForm.thickness.trim();
     const pricePerCm2 = Number(masterForm.pricePerCm2);
 
-    if (!material || !masterForm.density || !thickness || pricePerCm2 <= 0) {
-      flash("Lengkapi bahan, density, ketebalan, dan harga lebih dari 0.");
+    if (
+      !material ||
+      !masterForm.density ||
+      !thickness ||
+      pricePerCm2 <= 0
+    ) {
+      flash("Lengkapi bahan, density, ketebalan, dan bottom price.");
       return;
     }
 
@@ -398,9 +523,21 @@ export default function Home() {
   }
 
   function exportMaster() {
-    const blob = new Blob([JSON.stringify(master, null, 2)], {
+    const blob = new Blob(
+      [
+        JSON.stringify(
+          {
+            settings: { offerMultiplier },
+            rows: master,
+          },
+          null,
+          2,
+        ),
+      ],
+      {
       type: "application/json",
-    });
+      },
+    );
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
@@ -416,9 +553,12 @@ export default function Home() {
 
     try {
       const text = await file.text();
-      const rows = normalizePriceRows(JSON.parse(text));
+      const parsed = JSON.parse(text);
+      const rows = normalizePriceRows(parsed);
       if (!rows.length) throw new Error("Invalid rows");
       if (!window.confirm("Import akan mengganti master data saat ini. Lanjutkan?")) return;
+      const importedMultiplier = Number(parsed?.settings?.offerMultiplier);
+      if (importedMultiplier > 0) setOfferMultiplier(importedMultiplier);
       setMaster(rows);
       flash("Master data berhasil diimport.");
     } catch {
@@ -468,6 +608,70 @@ export default function Home() {
 
         {activeTab === "calculator" ? (
           <>
+            <section className="card p-5">
+                <div className="mb-4 flex items-center justify-between gap-3">
+                  <div>
+                    <h2 className="text-xl font-bold">Draft Customer</h2>
+                    <p className="mt-1 text-sm text-[#667085]">
+                      Pisahkan estimasi per customer.
+                    </p>
+                  </div>
+                  <button className="btn btn-primary" title="Draft baru" onClick={createDraft}>
+                    <Plus size={18} />
+                    Draft Baru
+                  </button>
+                </div>
+
+                {drafts.length ? (
+                  <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+                    {drafts.map((draft) => {
+                    const draftOfferTotal = draft.items.reduce(
+                      (sum, item) =>
+                        sum + item.areaCm2 * item.pricePerCm2 * offerMultiplier * item.qty,
+                      0,
+                    );
+                    const draftBottomTotal = draft.items.reduce(
+                      (sum, item) => sum + item.total,
+                      0,
+                    );
+
+                      return (
+                        <button
+                          key={draft.id}
+                          className={`rounded-lg border p-3 text-left ${
+                            draft.id === activeDraft?.id
+                              ? "border-[#0f766e] bg-[#f0fdfa]"
+                              : "border-[#e5e9f0] bg-white"
+                          }`}
+                          onClick={() => setActiveDraftId(draft.id)}
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <p className="font-bold text-[#17202a]">
+                              {draft.customerName || "Customer Baru"}
+                            </p>
+                            <span className="badge bg-[#eef2ff] text-[#3730a3]">
+                              {draft.status}
+                            </span>
+                          </div>
+                          <p className="mt-1 text-xs text-[#667085]">
+                            {draft.items.length} item | Offer {formatRupiah(draftOfferTotal)} | Bottom{" "}
+                            {formatRupiah(draftBottomTotal)}
+                          </p>
+                          <p className="mt-1 text-xs font-bold text-[#0f766e]">
+                            Kirim: {draft.customerPriceMode}
+                          </p>
+                        </button>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <EmptyState
+                    title="Belum ada draft customer."
+                    body="Klik tombol tambah untuk mulai estimasi customer baru."
+                  />
+                )}
+            </section>
+
             <section className="grid gap-5 lg:grid-cols-[1.1fr_0.9fr]">
               <div className="card p-5">
                   <div className="mb-5 flex items-center justify-between gap-3">
@@ -485,18 +689,6 @@ export default function Home() {
                     <RotateCcw size={18} />
                     Reset
                   </button>
-                </div>
-
-                <div className="mb-4 rounded-lg border border-[#e5e9f0] bg-[#f8fafc] p-4">
-                  <div className="field">
-                    <label>Nama Customer</label>
-                    <input
-                      className="input"
-                      placeholder="Contoh: Bu Rina / PT Maju Jaya"
-                      value={customerName}
-                      onChange={(event) => setCustomerName(event.target.value)}
-                    />
-                  </div>
                 </div>
 
                 <div className="grid gap-4 sm:grid-cols-2">
@@ -599,13 +791,17 @@ export default function Home() {
                 <div className="mt-5 flex flex-col gap-3 sm:flex-row">
                   <button
                     className="btn btn-primary sm:w-auto"
-                    disabled={Boolean(validationMessage)}
+                    disabled={!activeDraft || Boolean(validationMessage)}
                     onClick={addOrUpdateItem}
                   >
                     <Plus size={18} />
                     Tambah ke Daftar
                   </button>
-                  {validationMessage ? (
+                  {!activeDraft ? (
+                    <p className="rounded-lg border border-[#fed7aa] bg-[#fff7ed] px-3 py-2 text-sm font-bold text-[#9a3412]">
+                      Buat draft customer terlebih dahulu.
+                    </p>
+                  ) : validationMessage ? (
                     <p className="rounded-lg border border-[#fed7aa] bg-[#fff7ed] px-3 py-2 text-sm font-bold text-[#9a3412]">
                       {validationMessage}
                     </p>
@@ -616,10 +812,12 @@ export default function Home() {
             <div className="card p-5">
                 <h2 className="text-xl font-bold">Preview Harga</h2>
                 <div className="mt-5 grid gap-3">
-                  <Metric label="Luas per pcs" value={`${formatNumber(calculation.area)} cm²`} />
-                  <Metric label="Rate" value={`${formatRupiah(calculation.rate)} / cm²`} />
-                  <Metric label="Harga Satuan" value={formatRupiah(calculation.unitPrice)} highlight />
-                  <Metric label="Total" value={formatRupiah(calculation.total)} highlight strong />
+                  <Metric label="Luas per pcs" value={`${formatNumber(calculation.area)} cm2`} />
+                  <Metric label="Rate" value={`${formatRupiah(calculation.bottomRate)} / cm2`} />
+                  <Metric label="Offer Price Satuan" value={formatRupiah(calculation.offerUnitPrice)} highlight />
+                  <Metric label="Bottom Price Satuan" value={formatRupiah(calculation.unitPrice)} highlight />
+                  <Metric label="Offer Price Total" value={formatRupiah(calculation.offerTotal)} highlight strong />
+                  <Metric label="Bottom Price Total" value={formatRupiah(calculation.total)} highlight strong />
                 </div>
                 {selectedPrice ? (
                   <div className="mt-4 rounded-lg bg-[#f8fafc] p-3 text-sm text-[#475467]">
@@ -630,17 +828,77 @@ export default function Home() {
             </section>
 
             <section className="card p-5">
-              <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                <div>
-                  <h2 className="text-xl font-bold">Daftar Estimasi</h2>
-                  <p className="mt-1 text-sm text-[#667085]">
-                    Item tersimpan sementara di browser meski halaman direfresh.
-                  </p>
+              <div className="mb-5 grid gap-4 xl:grid-cols-[1fr_auto] xl:items-end">
+                <div className="grid gap-4 lg:grid-cols-[1.2fr_170px_210px]">
+                  <div>
+                    <h2 className="text-xl font-bold">Daftar Estimasi</h2>
+                    <div className="mt-3 field">
+                      <label>Nama Customer</label>
+                      <input
+                        className="input"
+                        placeholder="Contoh: Bu Rina / PT Maju Jaya"
+                        value={customerName}
+                        onChange={(event) =>
+                          updateActiveDraft((draft) => ({
+                            ...draft,
+                            customerName: event.target.value,
+                          }))
+                        }
+                      />
+                    </div>
+                  </div>
+                  <div className="field lg:self-end">
+                    <label>Status</label>
+                    <select
+                      className="input"
+                      value={activeDraft?.status || "Draft"}
+                      onChange={(event) =>
+                        updateActiveDraft((draft) => ({
+                          ...draft,
+                          status: event.target.value as EstimationDraftStatus,
+                        }))
+                      }
+                    >
+                      {ESTIMATION_DRAFT_STATUSES.map((status) => (
+                        <option key={status} value={status}>
+                          {status}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="field lg:self-end">
+                    <label>Harga Dikirim</label>
+                    <select
+                      className="input"
+                      value={activeDraft?.customerPriceMode || "Offer Price"}
+                      onChange={(event) =>
+                        updateActiveDraft((draft) => ({
+                          ...draft,
+                          customerPriceMode: event.target.value as CustomerPriceMode,
+                        }))
+                      }
+                    >
+                      {CUSTOMER_PRICE_MODES.map((mode) => (
+                        <option key={mode} value={mode}>
+                          {mode}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
                 </div>
-                <div className="flex flex-wrap gap-2">
-                  <button className="btn btn-secondary" onClick={copyWhatsApp}>
+
+                <div className="flex flex-wrap gap-2 xl:justify-end">
+                  <button className="btn btn-primary" onClick={copyWhatsApp}>
                     <Clipboard size={18} />
                     Copy WhatsApp
+                  </button>
+                  <button
+                    className="btn btn-secondary"
+                    disabled={!activeDraft}
+                    onClick={() => activeDraft && deleteDraft(activeDraft.id)}
+                  >
+                    <Trash2 size={18} />
+                    Hapus Draft
                   </button>
                   <button className="btn btn-danger" onClick={resetItems}>
                     <Trash2 size={18} />
@@ -661,8 +919,10 @@ export default function Home() {
                           <th>Tebal</th>
                           <th>Ukuran</th>
                           <th>Qty</th>
-                          <th>Harga Satuan</th>
-                          <th>Total</th>
+                          <th>Offer Satuan</th>
+                          <th>Bottom Satuan</th>
+                          <th>Offer Total</th>
+                          <th>Bottom Total</th>
                           <th>Action</th>
                         </tr>
                       </thead>
@@ -678,7 +938,9 @@ export default function Home() {
                               {formatNumber(item.widthCm)} cm
                             </td>
                             <td>{formatNumber(item.qty)}</td>
+                            <td>{formatRupiah(getOfferUnitPrice(item))}</td>
                             <td>{formatRupiah(item.unitPrice)}</td>
+                            <td className="font-bold">{formatRupiah(getOfferTotal(item))}</td>
                             <td className="font-bold">{formatRupiah(item.total)}</td>
                             <td>
                               <div className="flex gap-2">
@@ -693,9 +955,12 @@ export default function Home() {
                                   className="btn btn-danger"
                                   title="Hapus item"
                                   onClick={() =>
-                                    setItems((current) =>
-                                      current.filter((row) => row.id !== item.id),
-                                    )
+                                    updateActiveDraft((draft) => ({
+                                      ...draft,
+                                      items: draft.items.filter(
+                                        (row) => row.id !== item.id,
+                                      ),
+                                    }))
                                   }
                                 >
                                   <Trash2 size={16} />
@@ -707,9 +972,21 @@ export default function Home() {
                       </tbody>
                     </table>
                   </div>
-                  <div className="mt-5 flex justify-end">
+                  <div className="mt-5 flex flex-col justify-end gap-3 sm:flex-row">
+                    <div className="rounded-lg border border-[#bfdbfe] bg-[#eff6ff] px-5 py-4 text-right">
+                      <p className="text-sm font-bold text-[#1d4ed8]">Grand Harga Customer</p>
+                      <p className="text-2xl font-bold text-[#1e3a8a]">
+                        {formatRupiah(grandCustomerTotal)}
+                      </p>
+                    </div>
+                    <div className="rounded-lg border border-[#d9dee7] bg-white px-5 py-4 text-right">
+                      <p className="text-sm font-bold text-[#1d4ed8]">Grand Offer Price</p>
+                      <p className="text-2xl font-bold text-[#1e3a8a]">
+                        {formatRupiah(grandOfferTotal)}
+                      </p>
+                    </div>
                     <div className="rounded-lg border border-[#99f6e4] bg-[#f0fdfa] px-5 py-4 text-right">
-                      <p className="text-sm font-bold text-[#0f766e]">Grand Total</p>
+                      <p className="text-sm font-bold text-[#0f766e]">Grand Bottom Price</p>
                       <p className="text-2xl font-bold text-[#115e59]">
                         {formatRupiah(grandTotal)}
                       </p>
@@ -733,7 +1010,7 @@ export default function Home() {
                       {editingPriceId ? "Edit Harga" : "Tambah Harga"}
                     </h2>
                     <p className="mt-1 text-sm text-[#667085]">
-                      Area pengaturan harga jasa cutting per cm².
+                      Bottom price diatur per bahan. Offer price dihitung otomatis dari multiplier global.
                     </p>
                   </div>
                   {editingPriceId ? (
@@ -752,6 +1029,33 @@ export default function Home() {
                 </div>
 
                 <div className="grid gap-5">
+                  <div className="rounded-lg border border-[#bfdbfe] bg-[#eff6ff] p-4">
+                    <div className="grid gap-4 md:grid-cols-[1fr_220px] md:items-end">
+                      <div>
+                        <p className="text-sm font-bold text-[#1d4ed8]">
+                          Setting Offer Price Global
+                        </p>
+                        <p className="mt-1 text-xs text-[#475467]">
+                          Offer price = bottom price x multiplier ini.
+                        </p>
+                      </div>
+                      <div className="field">
+                        <label>Multiplier</label>
+                        <input
+                          className="input"
+                          min="0.01"
+                          step="0.01"
+                          type="number"
+                          value={offerMultiplier}
+                          onChange={(event) => {
+                            const value = Number(event.target.value);
+                            setOfferMultiplier(value > 0 ? value : DEFAULT_OFFER_MULTIPLIER);
+                          }}
+                        />
+                      </div>
+                    </div>
+                  </div>
+
                   <div className="rounded-lg border border-[#e5e9f0] bg-[#f8fafc] p-4">
                     <div className="mb-4 flex items-center justify-between gap-3">
                       <div>
@@ -826,7 +1130,7 @@ export default function Home() {
                         </div>
 
                         <div className="field">
-                          <label>Harga / cm²</label>
+                          <label>Bottom Price / cm2</label>
                           <input
                             className="input"
                             min="0"
@@ -1020,7 +1324,8 @@ export default function Home() {
                           <th>Kode Density</th>
                           <th>Ketebalan</th>
                           <th>Kode Barang</th>
-                          <th>Harga / cm²</th>
+                          <th>Offer / cm2</th>
+                          <th>Bottom / cm2</th>
                           <th>Status</th>
                           <th>Action</th>
                         </tr>
@@ -1034,6 +1339,7 @@ export default function Home() {
                             <td>{row.densityCode || "-"}</td>
                             <td>{formatThickness(row.thickness)}</td>
                             <td>{row.itemCode || "-"}</td>
+                            <td>{formatRupiah(row.pricePerCm2 * offerMultiplier)}</td>
                             <td>{formatRupiah(row.pricePerCm2)}</td>
                             <td>
                               <span

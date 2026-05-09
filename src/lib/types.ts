@@ -32,9 +32,35 @@ export type EstimationItem = {
   widthCm: number;
   areaCm2: number;
   qty: number;
+  offerPricePerCm2: number;
   pricePerCm2: number;
+  offerUnitPrice: number;
+  offerTotal: number;
   unitPrice: number;
   total: number;
+};
+
+export const ESTIMATION_DRAFT_STATUSES = [
+  "Draft",
+  "Sudah Dikirim",
+  "Deal",
+  "Batal",
+] as const;
+
+export type EstimationDraftStatus = (typeof ESTIMATION_DRAFT_STATUSES)[number];
+
+export const CUSTOMER_PRICE_MODES = ["Offer Price", "Bottom Price"] as const;
+
+export type CustomerPriceMode = (typeof CUSTOMER_PRICE_MODES)[number];
+
+export type EstimationDraft = {
+  id: string;
+  customerName: string;
+  status: EstimationDraftStatus;
+  customerPriceMode: CustomerPriceMode;
+  items: EstimationItem[];
+  createdAt: string;
+  updatedAt: string;
 };
 
 export type CalculatorInput = {
