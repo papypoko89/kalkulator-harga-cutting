@@ -64,6 +64,33 @@ function formatThickness(value: string) {
   return value.toLowerCase().includes("mm") ? value : `${value} mm`;
 }
 
+async function copyTextToClipboard(text: string) {
+  const textArea = document.createElement("textarea");
+  textArea.value = text;
+  textArea.setAttribute("readonly", "true");
+  textArea.style.position = "fixed";
+  textArea.style.left = "-9999px";
+  textArea.style.top = "0";
+  document.body.appendChild(textArea);
+  textArea.focus();
+  textArea.select();
+  textArea.setSelectionRange(0, text.length);
+
+  try {
+    const copied = document.execCommand("copy");
+    if (copied) return true;
+  } finally {
+    document.body.removeChild(textArea);
+  }
+
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return true;
+  }
+
+  return false;
+}
+
 export default function Home() {
   const [activeTab, setActiveTab] = useState<"calculator" | "master">(
     "calculator",
@@ -272,8 +299,12 @@ export default function Home() {
       .join("\n");
 
     try {
-      await navigator.clipboard.writeText(text);
-      flash("Berhasil dicopy ke WhatsApp.");
+      const copied = await copyTextToClipboard(text);
+      flash(
+        copied
+          ? "Berhasil dicopy ke WhatsApp."
+          : "Gagal copy. Browser tidak mengizinkan akses clipboard.",
+      );
     } catch {
       flash("Gagal copy. Browser tidak mengizinkan akses clipboard.");
     }
